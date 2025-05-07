@@ -1,4 +1,26 @@
 import Foundation
+import ObjectiveC
+
+/// A protocol defining the requirements for a localization provider.
+///
+/// This protocol allows custom localization providers to be created for different languages
+/// and regions, providing month and weekday names for Hijri date formatting.
+public protocol HijriLocalizationProvider {
+    /// Get the short name for a month (1-12)
+    func shortMonthName(for month: Int) -> String
+    
+    /// Get the full name for a month (1-12)
+    func fullMonthName(for month: Int) -> String
+    
+    /// Get the short name for a weekday (1-7, where 1 is Sunday)
+    func shortWeekdayName(for weekday: Int) -> String
+    
+    /// Get the full name for a weekday (1-7, where 1 is Sunday)
+    func fullWeekdayName(for weekday: Int) -> String
+    
+    /// Get the locale identifier this provider is for
+    var localeIdentifier: String { get }
+}
 
 /// A formatter that converts between Hijri dates and their textual representations.
 ///
@@ -13,16 +35,21 @@ public class HijriDateFormatter {
     public var calendar: HijriCalendar
 
     /// The locale to use for formatting.
-    public var locale: Locale
+    public var locale: Locale {
+        didSet {
+            // Update the localization provider when locale changes
+            updateLocalizationProvider()
+        }
+    }
 
     /// The date format style to use for formatting.
     public var dateStyle: DateFormatter.Style = .medium
 
     /// A custom date format string to use for formatting.
     public var dateFormat: String?
-
-    /// The language to use for month names and other localized strings.
-    public var language: HijriLanguage = .english
+    
+    /// The localization provider to use for month and weekday names.
+    private var localizationProvider: HijriLocalizationProvider
 
     // MARK: - Initialization
 
@@ -30,6 +57,7 @@ public class HijriDateFormatter {
     public init() {
         self.calendar = HijriCalendar.default
         self.locale = Locale.current
+        self.localizationProvider = HijriDateFormatter.findLocalizationProvider(for: locale)
     }
 
     /// Creates a new HijriDateFormatter with the specified calendar and locale.
@@ -40,6 +68,12 @@ public class HijriDateFormatter {
     public init(calendar: HijriCalendar, locale: Locale = Locale.current) {
         self.calendar = calendar
         self.locale = locale
+        self.localizationProvider = HijriDateFormatter.findLocalizationProvider(for: locale)
+    }
+    
+    /// Updates the localization provider based on the current locale.
+    private func updateLocalizationProvider() {
+        self.localizationProvider = HijriDateFormatter.findLocalizationProvider(for: locale)
     }
 
     // MARK: - Formatting Methods
@@ -216,12 +250,7 @@ public class HijriDateFormatter {
     /// - Parameter month: The month number (1-12).
     /// - Returns: The short name for the month.
     private func shortMonthName(for month: Int) -> String {
-        switch language {
-        case .english:
-            return englishShortMonthNames[month - 1]
-        case .arabic:
-            return arabicMonthNames[month - 1]
-        }
+        return localizationProvider.shortMonthName(for: month)
     }
 
     /// Gets the full name for a month.
@@ -229,12 +258,7 @@ public class HijriDateFormatter {
     /// - Parameter month: The month number (1-12).
     /// - Returns: The full name for the month.
     private func fullMonthName(for month: Int) -> String {
-        switch language {
-        case .english:
-            return englishFullMonthNames[month - 1]
-        case .arabic:
-            return arabicMonthNames[month - 1]
-        }
+        return localizationProvider.fullMonthName(for: month)
     }
 
     /// Gets the short name for a weekday.
@@ -242,12 +266,7 @@ public class HijriDateFormatter {
     /// - Parameter weekday: The weekday number (1-7).
     /// - Returns: The short name for the weekday.
     private func shortWeekdayName(for weekday: Int) -> String {
-        switch language {
-        case .english:
-            return englishShortWeekdayNames[weekday - 1]
-        case .arabic:
-            return arabicShortWeekdayNames[weekday - 1]
-        }
+        return localizationProvider.shortWeekdayName(for: weekday)
     }
 
     /// Gets the full name for a weekday.
@@ -255,12 +274,7 @@ public class HijriDateFormatter {
     /// - Parameter weekday: The weekday number (1-7).
     /// - Returns: The full name for the weekday.
     private func fullWeekdayName(for weekday: Int) -> String {
-        switch language {
-        case .english:
-            return englishFullWeekdayNames[weekday - 1]
-        case .arabic:
-            return arabicFullWeekdayNames[weekday - 1]
-        }
+        return localizationProvider.fullWeekdayName(for: weekday)
     }
 
     /// Gets the month number for a month name.
@@ -268,68 +282,211 @@ public class HijriDateFormatter {
     /// - Parameter name: The month name.
     /// - Returns: The month number (1-12), or nil if the name is not recognized.
     private func monthNumber(from name: String) -> Int? {
-        switch language {
-        case .english:
-            if let index = englishFullMonthNames.firstIndex(of: name) {
-                return index + 1
-            }
-            if let index = englishShortMonthNames.firstIndex(of: name) {
-                return index + 1
-            }
-        case .arabic:
-            if let index = arabicMonthNames.firstIndex(of: name) {
-                return index + 1
+        // Try to find month by its full name in the current localization provider
+        for month in 1...12 {
+            if localizationProvider.fullMonthName(for: month) == name || localizationProvider.shortMonthName(for: month) == name {
+                return month
             }
         }
-
+        
+        // If not found in the current provider, check all registered providers
+        let allProviders = HijriDateFormatter.getLocalizationProviders()
+        
+        for provider in allProviders {
+            // Skip the current provider, we already checked it
+            if provider.localeIdentifier == localizationProvider.localeIdentifier {
+                continue
+            }
+            
+            for month in 1...12 {
+                if provider.fullMonthName(for: month) == name || provider.shortMonthName(for: month) == name {
+                    return month
+                }
+            }
+        }
+        
         return nil
     }
+    
+    // MARK: - Localization Provider Management
+    
+    /// A frozen, immutable class to coordinate access to providers with thread safety
+    /// Using `@unchecked Sendable` because the class internally manages its own synchronization
+    private final class ProvidersCoordinator: @unchecked Sendable {
+        /// Singleton instance - fully thread-safe, established at compile time
+        private static let _shared = ProvidersCoordinator()
+        
+        /// Thread-safe access to the singleton
+        static var shared: ProvidersCoordinator {
+            return _shared
+        }
+        
+        /// Lock for thread-safe access
+        private let lock = NSLock()
+        
+        /// Immutable default providers
+        private let defaultProviders: [HijriLocalizationProvider] = [
+            EnglishLocalizationProvider(),
+            ArabicLocalizationProvider()
+        ]
+        
+        /// Custom added providers
+        private var customProviders: [HijriLocalizationProvider] = []
+        
+        /// Private initializer to ensure singleton pattern
+        private init() {}
+        
+        /// Returns all providers (defaults + custom)
+        func getAllProviders() -> [HijriLocalizationProvider] {
+            lock.lock()
+            defer { lock.unlock() }
+            return defaultProviders + customProviders
+        }
+        
+        /// Adds or updates a provider
+        func registerProvider(_ provider: HijriLocalizationProvider) {
+            lock.lock()
+            defer { lock.unlock() }
+            
+            // Replace existing provider for the same locale if it exists
+            if let index = customProviders.firstIndex(where: { $0.localeIdentifier == provider.localeIdentifier }) {
+                customProviders[index] = provider
+            } else {
+                customProviders.append(provider)
+            }
+        }
+        
+        /// Finds appropriate provider for a locale
+        func findProvider(for locale: Locale) -> HijriLocalizationProvider {
+            lock.lock()
+            defer { lock.unlock() }
+            
+            let allProviders = defaultProviders + customProviders
+            
+            // First check for exact match
+            let identifier = locale.identifier
+            if let provider = allProviders.first(where: { $0.localeIdentifier == identifier }) {
+                return provider
+            }
+            
+            // Then check for language match
+            let language = locale.languageCode ?? "en"
+            if let provider = allProviders.first(where: { $0.localeIdentifier.hasPrefix(language) }) {
+                return provider
+            }
+            
+            // Default to English
+            return allProviders.first(where: { $0.localeIdentifier.hasPrefix("en") }) ?? EnglishLocalizationProvider()
+        }
+    }
+    
+    /// Get a copy of all registered localization providers
+    private static func getLocalizationProviders() -> [HijriLocalizationProvider] {
+        return ProvidersCoordinator.shared.getAllProviders()
+    }
+    
+    /// Find a localization provider for the given locale
+    private static func findLocalizationProvider(for locale: Locale) -> HijriLocalizationProvider {
+        return ProvidersCoordinator.shared.findProvider(for: locale)
+    }
+    
+    /// Registers a custom localization provider.
+    /// - Parameter provider: The localization provider to register.
+    public static func registerLocalizationProvider(_ provider: HijriLocalizationProvider) {
+        // Thread-safety is handled within the coordinator class
+        ProvidersCoordinator.shared.registerProvider(provider)
+    }
+}
 
-    // MARK: - Localized Month and Weekday Names
+// MARK: - Default Localization Providers
 
+/// English localization provider for Hijri dates.
+public struct EnglishLocalizationProvider: HijriLocalizationProvider {
+    public var localeIdentifier: String { return "en" }
+    
     /// The English short month names.
-    private let englishShortMonthNames = [
+    private let shortMonthNames = [
         "Muh", "Saf", "Rb1", "Rb2", "Jm1", "Jm2", "Raj", "Sha", "Ram", "Shw", "Qid", "Hij",
     ]
 
     /// The English full month names.
-    private let englishFullMonthNames = [
+    private let fullMonthNames = [
         "Muharram", "Safar", "Rabi Al Awwal", "Rabi Al Thani", "Jumada Al Oula", "Jumada Al Akhira",
         "Rajab", "Shaban", "Ramadan", "Shawwal", "Dhul Qidah", "Dhul Hijjah",
     ]
 
-    /// The Arabic month names.
-    private let arabicMonthNames = [
-        "محرم", "صفر", "ربيع الأول", "ربيع الثاني", "جمادى الأولى", "جمادى الآخرة",
-        "رجب", "شعبان", "رمضان", "شوال", "ذو القعدة", "ذو الحجة",
-    ]
-
     /// The English short weekday names.
-    private let englishShortWeekdayNames = [
+    private let shortWeekdayNames = [
         "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat",
     ]
 
     /// The English full weekday names.
-    private let englishFullWeekdayNames = [
+    private let fullWeekdayNames = [
         "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
     ]
+    
+    public func shortMonthName(for month: Int) -> String {
+        guard month >= 1 && month <= 12 else { return "" }
+        return shortMonthNames[month - 1]
+    }
+    
+    public func fullMonthName(for month: Int) -> String {
+        guard month >= 1 && month <= 12 else { return "" }
+        return fullMonthNames[month - 1]
+    }
+    
+    public func shortWeekdayName(for weekday: Int) -> String {
+        guard weekday >= 1 && weekday <= 7 else { return "" }
+        return shortWeekdayNames[weekday - 1]
+    }
+    
+    public func fullWeekdayName(for weekday: Int) -> String {
+        guard weekday >= 1 && weekday <= 7 else { return "" }
+        return fullWeekdayNames[weekday - 1]
+    }
+    
+    public init() {}
+}
 
+/// Arabic localization provider for Hijri dates.
+public struct ArabicLocalizationProvider: HijriLocalizationProvider {
+    public var localeIdentifier: String { return "ar" }
+    
+    /// The Arabic month names.
+    private let monthNames = [
+        "محرم", "صفر", "ربيع الأول", "ربيع الثاني", "جمادى الأولى", "جمادى الآخرة",
+        "رجب", "شعبان", "رمضان", "شوال", "ذو القعدة", "ذو الحجة",
+    ]
+    
     /// The Arabic short weekday names.
-    private let arabicShortWeekdayNames = [
+    private let shortWeekdayNames = [
         "أحد", "إثن", "ثلا", "أرب", "خمي", "جمع", "سبت",
     ]
 
     /// The Arabic full weekday names.
-    private let arabicFullWeekdayNames = [
+    private let fullWeekdayNames = [
         "الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت",
     ]
-}
-
-/// The language to use for month names and other localized strings.
-public enum HijriLanguage {
-    /// English language.
-    case english
-
-    /// Arabic language.
-    case arabic
+    
+    public func shortMonthName(for month: Int) -> String {
+        guard month >= 1 && month <= 12 else { return "" }
+        return monthNames[month - 1]
+    }
+    
+    public func fullMonthName(for month: Int) -> String {
+        guard month >= 1 && month <= 12 else { return "" }
+        return monthNames[month - 1]
+    }
+    
+    public func shortWeekdayName(for weekday: Int) -> String {
+        guard weekday >= 1 && weekday <= 7 else { return "" }
+        return shortWeekdayNames[weekday - 1]
+    }
+    
+    public func fullWeekdayName(for weekday: Int) -> String {
+        guard weekday >= 1 && weekday <= 7 else { return "" }
+        return fullWeekdayNames[weekday - 1]
+    }
+    
+    public init() {}
 }
