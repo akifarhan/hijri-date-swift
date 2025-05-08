@@ -198,12 +198,12 @@ import Foundation
     formatter.dateFormat = "MMMM"
 
     // Test English
-    formatter.language = .english
+    formatter.locale = Locale(identifier: "en")
     let englishMonth = try formatter.string(from: date)
     #expect(englishMonth == "Ramadan")
 
     // Test Arabic
-    formatter.language = .arabic
+    formatter.locale = Locale(identifier: "ar")
     let arabicMonth = try formatter.string(from: date)
     #expect(arabicMonth == "رمضان")
 }

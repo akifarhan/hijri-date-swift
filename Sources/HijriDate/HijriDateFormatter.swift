@@ -239,7 +239,7 @@ public class HijriDateFormatter {
     /// - Parameter date: The Hijri date.
     /// - Returns: The weekday (1 = Sunday, 7 = Saturday).
     private func weekdayFromHijriDate(_ date: HijriDate) throws -> Int {
-        let gregorianDate = try calendar.date(from: date)
+        let gregorianDate = calendar.date(from: date)
         let calendar = Calendar(identifier: .gregorian)
         let weekday = calendar.component(.weekday, from: gregorianDate)
         return weekday
@@ -356,27 +356,48 @@ public class HijriDateFormatter {
             }
         }
         
-        /// Finds appropriate provider for a locale
-        func findProvider(for locale: Locale) -> HijriLocalizationProvider {
+        /// Resets all custom providers (for testing purposes)
+        func resetCustomProviders() {
             lock.lock()
             defer { lock.unlock() }
             
-            let allProviders = defaultProviders + customProviders
+            // Clear the custom providers array
+            customProviders.removeAll()
+        }
+        
+        /// Finds appropriate provider for a locale with enhanced safety
+        func findProvider(for locale: Locale) -> HijriLocalizationProvider {
+            // Create a safe copy to avoid any potential memory issues
+            let safeLocale = Locale(identifier: locale.identifier)
             
-            // First check for exact match
-            let identifier = locale.identifier
-            if let provider = allProviders.first(where: { $0.localeIdentifier == identifier }) {
+            lock.lock()
+            
+            // Make a safe local copy of providers while under lock
+            let providerSnapshot = defaultProviders + customProviders
+            lock.unlock() // Release lock as soon as we have a copy
+            
+            // First check for exact match using the safe locale
+            let identifier = safeLocale.identifier
+            if !identifier.isEmpty, let provider = providerSnapshot.first(where: { $0.localeIdentifier == identifier }) {
                 return provider
             }
             
-            // Then check for language match
-            let language = locale.languageCode ?? "en"
-            if let provider = allProviders.first(where: { $0.localeIdentifier.hasPrefix(language) }) {
+            // Then check for language match with additional null checks
+            let language = safeLocale.languageCode ?? "en"
+            if !language.isEmpty, let provider = providerSnapshot.first(where: { 
+                !$0.localeIdentifier.isEmpty && $0.localeIdentifier.hasPrefix(language) 
+            }) {
                 return provider
             }
             
-            // Default to English
-            return allProviders.first(where: { $0.localeIdentifier.hasPrefix("en") }) ?? EnglishLocalizationProvider()
+            // Default to a fresh instance of EnglishLocalizationProvider for maximum safety
+            if let englishProvider = providerSnapshot.first(where: { 
+                !$0.localeIdentifier.isEmpty && $0.localeIdentifier.hasPrefix("en") 
+            }) {
+                return englishProvider
+            }
+            
+            return EnglishLocalizationProvider()
         }
     }
     
@@ -393,8 +414,21 @@ public class HijriDateFormatter {
     /// Registers a custom localization provider.
     /// - Parameter provider: The localization provider to register.
     public static func registerLocalizationProvider(_ provider: HijriLocalizationProvider) {
+        // Additional validation before registration
+        guard !provider.localeIdentifier.isEmpty else {
+            print("Warning: Attempted to register provider with empty locale identifier")
+            return
+        }
+        
         // Thread-safety is handled within the coordinator class
         ProvidersCoordinator.shared.registerProvider(provider)
+    }
+    
+    /// Resets all custom localization providers.
+    /// This method is primarily for testing purposes, to ensure a clean state between tests.
+    /// Do not use in production code unless you specifically need to remove all custom providers.
+    public static func resetCustomProviders() {
+        ProvidersCoordinator.shared.resetCustomProviders()
     }
 }
 
